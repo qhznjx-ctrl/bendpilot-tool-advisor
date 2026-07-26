@@ -1,0 +1,459 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { generateDxfFile, normalizePunchContour, readDxfFile } from "./dxf-parser.js";
+import {
+  CTG_ANGLES,
+  CTG_CATALOG,
+  CTG_SYSTEMS,
+  CTG_TOOLS,
+  type CtgToolKind,
+  type CtgToolRecord,
+} from "./ctg-tool-catalog";
+
+type Point = { x: number; y: number };
+
+type ToolLibraryProps = {
+  open: boolean;
+  activePunch?: string | null;
+  activeDie?: string | null;
+  geometries: Record<string, Point[]>;
+  onClose: () => void;
+  onUseTool: (tool: CtgToolRecord) => void;
+  onImportGeometry: (tool: CtgToolRecord, points: Point[]) => boolean;
+  onExportGeometries?: () => void;
+};
+
+const PAGE_SIZE = 30;
+
+const KIND_LABELS: Record<"all" | CtgToolKind, string> = {
+  all: "全部",
+  punch: "上模",
+  die: "下模",
+  adapter: "适配/夹持",
+  other: "其他",
+};
+
+function genericDrawing(tool: CtgToolRecord): Point[] {
+  const height = Math.max(60, Math.min(260, tool.heightMm ?? (tool.kind === "punch" ? 145 : 70)));
+  if (tool.kind === "punch") {
+    if (/gooseneck/.test(tool.family)) {
+      const deep = tool.family === "deep-gooseneck" ? 52 : 34;
+      return [
+        { x: -24, y: -height }, { x: 20, y: -height }, { x: 20, y: -height + 22 },
+        { x: 9, y: -height + 22 }, { x: 7, y: -55 }, { x: -deep, y: -55 },
+        { x: -deep - 10, y: -38 }, { x: -7, y: -15 }, { x: 0, y: 0 },
+        { x: 6, y: -15 }, { x: -deep + 4, y: -43 }, { x: 15, y: -43 },
+        { x: 15, y: -height + 28 }, { x: -24, y: -height + 28 },
+      ];
+    }
+    return [
+      { x: -25, y: -height }, { x: 25, y: -height }, { x: 25, y: -height + 20 },
+      { x: 12, y: -height + 20 }, { x: 12, y: -35 }, { x: 5, y: -12 },
+      { x: 0, y: 0 }, { x: -5, y: -12 }, { x: -12, y: -35 },
+      { x: -12, y: -height + 20 }, { x: -25, y: -height + 20 },
+    ];
+  }
+  if (tool.kind === "die") {
+    const v = Math.max(8, Math.min(80, tool.vOpeningMm ?? 24));
+    return [
+      { x: -62, y: 0 }, { x: -v / 2, y: 0 }, { x: 0, y: 22 },
+      { x: v / 2, y: 0 }, { x: 62, y: 0 }, { x: 54, y: height },
+      { x: -54, y: height },
+    ];
+  }
+  return [
+    { x: -55, y: -40 }, { x: 55, y: -40 }, { x: 55, y: 40 },
+    { x: 18, y: 40 }, { x: 18, y: 20 }, { x: -18, y: 20 },
+    { x: -18, y: 40 }, { x: -55, y: 40 },
+  ];
+}
+
+function ToolDrawing({ tool, geometry }: { tool: CtgToolRecord; geometry?: Point[] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = 620;
+    const height = 430;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.fillStyle = "#f8fbfa";
+    context.fillRect(0, 0, width, height);
+    context.strokeStyle = "rgba(40, 74, 59, .07)";
+    context.lineWidth = 1;
+    for (let x = 18; x < width; x += 24) {
+      context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
+    }
+    for (let y = 18; y < height; y += 24) {
+      context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
+    }
+
+    const points = geometry?.length ? geometry : genericDrawing(tool);
+    const minX = Math.min(...points.map((point) => point.x));
+    const maxX = Math.max(...points.map((point) => point.x));
+    const minY = Math.min(...points.map((point) => point.y));
+    const maxY = Math.max(...points.map((point) => point.y));
+    const scale = Math.min((width - 150) / Math.max(1, maxX - minX), (height - 90) / Math.max(1, maxY - minY));
+    const offsetX = width / 2 - (minX + maxX) / 2 * scale;
+    const offsetY = height / 2 - (minY + maxY) / 2 * scale;
+    context.beginPath();
+    points.forEach((point, index) => {
+      const x = point.x * scale + offsetX;
+      const y = point.y * scale + offsetY;
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    context.closePath();
+    context.fillStyle = geometry ? "rgba(55, 112, 164, .16)" : "rgba(39, 111, 81, .13)";
+    context.fill();
+    context.strokeStyle = geometry ? "#2f6fa9" : "#245943";
+    context.lineWidth = 2.4;
+    context.lineJoin = "round";
+    context.stroke();
+    context.fillStyle = "#17372a";
+    context.font = "700 17px Arial";
+    context.fillText(tool.articleNumber, 24, 34);
+    context.fillStyle = "#6a7a73";
+    context.font = "12px Arial";
+    context.fillText(geometry ? "型号匹配 DXF 主轮廓 · 毫米单位" : "目录族级示意 · 非 CTG 原厂图纸，不参与碰撞", 24, height - 22);
+  }, [geometry, tool]);
+  return <canvas className="library-drawing-canvas" ref={canvasRef} aria-label={`${tool.articleNumber} 模具轮廓图`} />;
+}
+
+function specValue(value: number | undefined, suffix: string) {
+  return value == null ? "—" : `${value}${suffix}`;
+}
+
+function normalizedToolName(value: string) {
+  return value.replace(/\.dxf(?:\.zip)?$/i, "").replace(/[^0-9a-z]/gi, "").toLowerCase();
+}
+
+function matchesArticleFile(fileName: string, articleNumber: string) {
+  const expected = articleNumber.replace(/[^0-9a-z]/gi, "").toLowerCase();
+  return expected.length >= 4 && normalizedToolName(fileName) === expected;
+}
+
+function bounds(points: Point[]) {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+  return { width: maxX - minX, height: maxY - minY };
+}
+
+function isSimulatablePunch(tool: CtgToolRecord) {
+  return tool.kind === "punch"
+    && /(punch|top[- ]tool|blade|radius[- ]tool)/i.test(tool.name)
+    && !/(setup aid|accessory|\bkit\b|adjusting strip|holder)/i.test(tool.name);
+}
+
+function hasPlausibleDxfAddress(tool: CtgToolRecord) {
+  return Boolean(tool.dxfUrl) && /^[0-9]{2,3}\.[0-9]{3}[a-z]?$/i.test(tool.articleNumber);
+}
+
+export function ToolLibrary({
+  open,
+  activePunch,
+  activeDie,
+  geometries,
+  onClose,
+  onUseTool,
+  onImportGeometry,
+  onExportGeometries,
+}: ToolLibraryProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const resultListRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  const importRequestRef = useRef(0);
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState<"all" | CtgToolKind>("all");
+  const [system, setSystem] = useState("all");
+  const [angle, setAngle] = useState("all");
+  const [page, setPage] = useState(1);
+  const [selectedId, setSelectedId] = useState(CTG_TOOLS[0]?.id ?? "");
+  const [sourceConfirmed, setSourceConfirmed] = useState(false);
+  const [importingArticle, setImportingArticle] = useState<string | null>(null);
+  const [importMessage, setImportMessage] = useState<{ articleNumber: string; text: string; tone: "progress" | "success" | "error" } | null>(null);
+
+  const filtered = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return CTG_TOOLS.filter((tool) => {
+      if (kind !== "all" && tool.kind !== kind) return false;
+      if (system !== "all" && tool.system !== system) return false;
+      if (angle !== "all" && tool.angleDeg !== Number(angle)) return false;
+      if (!normalizedQuery) return true;
+      const specifications = [
+        tool.angleDeg == null ? "" : `${tool.angleDeg}° angle ${tool.angleDeg}`,
+        tool.heightMm == null ? "" : `H${tool.heightMm} height ${tool.heightMm}`,
+        tool.radiusMm == null ? "" : `R${tool.radiusMm} radius ${tool.radiusMm}`,
+        tool.vOpeningMm == null ? "" : `V${tool.vOpeningMm} opening ${tool.vOpeningMm}`,
+        tool.lengthMm == null ? "" : `L${tool.lengthMm} length ${tool.lengthMm}`,
+      ].join(" ");
+      return `${tool.articleNumber} ${tool.name} ${tool.system} ${tool.variant ?? ""} ${specifications}`.toLowerCase().includes(normalizedQuery);
+    });
+  }, [angle, kind, query, system]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const visibleTools = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const selectedById = CTG_TOOLS.find((tool) => tool.id === selectedId);
+  const selected = selectedById && visibleTools.some((tool) => tool.id === selectedById.id)
+    ? selectedById
+    : visibleTools[0] ?? CTG_TOOLS[0];
+  const noResults = filtered.length === 0;
+  const closeLibrary = useCallback(() => {
+    importRequestRef.current += 1;
+    setImportingArticle(null);
+    setImportMessage(null);
+    setSourceConfirmed(false);
+    onCloseRef.current();
+  }, []);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  function cancelImport() {
+    importRequestRef.current += 1;
+    setImportingArticle(null);
+    setImportMessage(null);
+  }
+
+  function resetBrowseState() {
+    cancelImport();
+    setPage(1);
+    setSelectedId("");
+    setSourceConfirmed(false);
+    if (resultListRef.current) resultListRef.current.scrollTop = 0;
+  }
+
+  function selectTool(tool: CtgToolRecord) {
+    cancelImport();
+    setSelectedId(tool.id);
+    setSourceConfirmed(false);
+  }
+
+  function changePage(nextPage: number) {
+    cancelImport();
+    const boundedPage = Math.max(1, Math.min(pageCount, nextPage));
+    setPage(boundedPage);
+    setSelectedId(filtered[(boundedPage - 1) * PAGE_SIZE]?.id ?? "");
+    setSourceConfirmed(false);
+    if (resultListRef.current) resultListRef.current.scrollTop = 0;
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const backdrop = dialogRef.current?.parentElement;
+    const shell = backdrop?.parentElement;
+    const backgroundNodes = shell
+      ? [...shell.children].filter((node): node is HTMLElement => node instanceof HTMLElement && node !== backdrop)
+      : [];
+    const previousBackgroundState = backgroundNodes.map((node) => ({
+      node,
+      inert: node.inert,
+      ariaHidden: node.getAttribute("aria-hidden"),
+    }));
+    backgroundNodes.forEach((node) => {
+      node.inert = true;
+      node.setAttribute("aria-hidden", "true");
+    });
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusTimer = window.setTimeout(() => dialogRef.current?.querySelector<HTMLInputElement>(".library-search input")?.focus(), 0);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeLibrary();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])")]
+        .filter((node) => node.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", onKey);
+      importRequestRef.current += 1;
+      document.body.style.overflow = previousBodyOverflow;
+      previousBackgroundState.forEach(({ node, inert, ariaHidden }) => {
+        node.inert = inert;
+        if (ariaHidden == null) node.removeAttribute("aria-hidden");
+        else node.setAttribute("aria-hidden", ariaHidden);
+      });
+      previousFocusRef.current?.focus();
+    };
+  }, [closeLibrary, open]);
+
+  async function importDxf(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file || !selected) return;
+    const importedTool = selected;
+    const requestId = importRequestRef.current + 1;
+    importRequestRef.current = requestId;
+    setImportingArticle(importedTool.articleNumber);
+    setImportMessage({ articleNumber: importedTool.articleNumber, text: "正在校验 DXF…", tone: "progress" });
+    try {
+      if (!sourceConfirmed) throw new Error("请先确认文件来自当前 CTG 原厂型号页面");
+      if (!matchesArticleFile(file.name, importedTool.articleNumber)) {
+        throw new Error(`文件名与型号 ${importedTool.articleNumber} 不匹配，请使用 CTG 原厂下载文件`);
+      }
+      const result = await readDxfFile(file);
+      if (requestId !== importRequestRef.current) return;
+      if (!result.closed) throw new Error("DXF 主轮廓没有闭合");
+      if (result.entryName && !matchesArticleFile(result.entryName, importedTool.articleNumber)) {
+        throw new Error(`ZIP 内 DXF 与型号 ${importedTool.articleNumber} 不匹配`);
+      }
+      const measured = bounds(result.points);
+      if (measured.width < 1 || measured.height < 1 || measured.width > 1000 || measured.height > 1000) {
+        throw new Error("DXF 轮廓尺寸超出可信的折弯模具范围");
+      }
+      const maxY = Math.max(...result.points.map(p => p.y));
+      const points = importedTool.kind === "punch"
+        ? normalizePunchContour(result.points)
+        : importedTool.kind === "die" || importedTool.kind === "adapter"
+          ? result.points.map(p => ({ x: p.x, y: maxY - p.y }))
+          : result.points;
+      if (points.length > 600) throw new Error("DXF 主轮廓超过 600 点，不进入实时碰撞；请先在 CAD 中简化轮廓");
+      if (requestId !== importRequestRef.current) return;
+      if (!(await onImportGeometry(importedTool, points))) {
+        throw new Error("轮廓校验通过，但本机存储不可用或空间不足，未标记为可用");
+      }
+      if (requestId !== importRequestRef.current) return;
+      setImportMessage({ articleNumber: importedTool.articleNumber, text: `文件来源已确认，型号、毫米单位与闭合主轮廓已校验（${points.length} 点）`, tone: "success" });
+    } catch (error) {
+      if (requestId === importRequestRef.current) {
+        setImportMessage({ articleNumber: importedTool.articleNumber, text: error instanceof Error ? error.message : "DXF 解析失败", tone: "error" });
+      }
+    } finally {
+      input.value = "";
+      if (requestId === importRequestRef.current) setImportingArticle(null);
+    }
+  }
+
+  if (!open || !selected) return null;
+  const selectedGeometry = geometries[selected.articleNumber];
+  const canImport = (isSimulatablePunch(selected) || selected.kind === "die") && hasPlausibleDxfAddress(selected);
+  const canUsePunch = isSimulatablePunch(selected) && Boolean(selectedGeometry);
+  const hasDieGeometry = selected.kind === "die" && Boolean(selectedGeometry);
+  const canUseDie = hasDieGeometry || (selected.kind === "die" && typeof selected.vOpeningMm === "number" && selected.vOpeningMm > 0);
+  const canUse = canUsePunch || canUseDie;
+  const current = selected.kind === "punch"
+    ? activePunch === selected.articleNumber
+    : selected.kind === "die" && activeDie === selected.articleNumber;
+
+  return (
+    <div className="tool-library-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeLibrary()}>
+      <section ref={dialogRef} className="tool-library-dialog" role="dialog" aria-modal="true" aria-label="CTG 折弯模具库">
+        <header className="library-header">
+          <div><span>CTG TOOL INDEX</span><h2>折弯模具库</h2></div>
+          <button type="button" onClick={closeLibrary} aria-label="关闭模具库">×</button>
+        </header>
+        <div className="library-toolbar">
+          <label className="library-search"><span aria-hidden="true">⌕</span><input aria-label="搜索 CTG 模具型号、名称或规格" value={query} onChange={(event) => { setQuery(event.target.value); resetBrowseState(); }} placeholder="搜索型号、名称或 H / R / V / 角度" autoFocus /></label>
+          <select value={system} onChange={(event) => { setSystem(event.target.value); resetBrowseState(); }} aria-label="按夹持系统筛选">
+            <option value="all">全部系统</option>
+            {CTG_SYSTEMS.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <select value={angle} onChange={(event) => { setAngle(event.target.value); resetBrowseState(); }} aria-label="按角度筛选">
+            <option value="all">全部角度</option>
+            {CTG_ANGLES.map((item) => <option key={item} value={item}>{item}°</option>)}
+          </select>
+        </div>
+        <div className="library-kind-tabs" role="group" aria-label="按模具类型筛选">
+          {(["all", "punch", "die", "adapter", "other"] as const).map((item) => (
+            <button type="button" aria-pressed={kind === item} className={kind === item ? "active" : ""} key={item} onClick={() => { setKind(item); resetBrowseState(); }}>
+              {KIND_LABELS[item]} <span>{item === "all" ? CTG_CATALOG.total : CTG_CATALOG.counts[item] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+        <div className="library-body">
+          <div className="library-results">
+            <div className="library-results-heading" aria-live="polite"><strong>{filtered.length} 个结果</strong><span>第 {page}/{pageCount} 页</span></div>
+            <div className="library-result-list" ref={resultListRef}>
+              {visibleTools.map((tool) => {
+                const isActive = tool.articleNumber === activePunch || tool.articleNumber === activeDie;
+                return (
+                  <button type="button" aria-pressed={selected.id === tool.id} key={`${tool.id}-${tool.variant ?? "base"}`} className={`${selected.id === tool.id ? "selected" : ""} ${isActive ? "in-use" : ""}`} onClick={() => selectTool(tool)}>
+                    <span className={`library-tool-glyph ${tool.kind}`}><i /></span>
+                    <span><strong>{tool.articleNumber}</strong><small>{tool.name}</small><em>{tool.system} · {KIND_LABELS[tool.kind]}</em></span>
+                    <b>{geometries[tool.articleNumber] ? "CAD" : tool.angleDeg ? `${tool.angleDeg}°` : "—"}</b>
+                  </button>
+                );
+              })}
+              {visibleTools.length === 0 && <div className="library-empty">没有符合当前条件的模具。</div>}
+            </div>
+            <div className="library-pagination">
+              <button type="button" disabled={page === 1} onClick={() => changePage(page - 1)}>← 上一页</button>
+              <button type="button" disabled={page === pageCount} onClick={() => changePage(page + 1)}>下一页 →</button>
+            </div>
+          </div>
+          <aside className="library-detail">
+            {noResults ? (
+              <div className="library-empty-detail"><strong>没有匹配的模具</strong><p>请清除部分筛选条件，或尝试输入 CTG 型号中的数字。</p></div>
+            ) : (
+              <>
+                <div className="library-detail-title"><span>{KIND_LABELS[selected.kind]} · {selected.system}</span><h3>{selected.articleNumber}</h3><p>{selected.name}</p></div>
+                <div className="library-drawing-wrap">
+                  <ToolDrawing tool={selected} geometry={selectedGeometry} />
+                  <span className={selectedGeometry ? "cad-ready" : "cad-pending"}>{selectedGeometry ? "型号匹配 CAD 主轮廓" : "非原厂族级示意"}</span>
+                </div>
+                <dl className="library-specs">
+                  <div><dt>角度</dt><dd>{specValue(selected.angleDeg, "°")}</dd></div>
+                  <div><dt>高度</dt><dd>{specValue(selected.heightMm, " mm")}</dd></div>
+                  <div><dt>半径</dt><dd>{specValue(selected.radiusMm, " mm")}</dd></div>
+                  <div><dt>V 口</dt><dd>{specValue(selected.vOpeningMm, " mm")}</dd></div>
+                  <div><dt>长度规格</dt><dd>{selected.variant || specValue(selected.lengthMm, " mm")}</dd></div>
+                  <div><dt>网页标价</dt><dd>{selected.priceEur == null ? "—" : `€ ${selected.priceEur.toLocaleString("de-DE")}`}</dd></div>
+                </dl>
+                <p className="library-price-note">抓取于 {CTG_CATALOG.importedAt.slice(0, 10)}；价格、税费、库存与变体以原厂详情页为准。</p>
+                <div className="library-source-actions">
+                  <a href={selected.sourceUrl} target="_blank" rel="noreferrer">查看 CTG 原厂详情 ↗</a>
+                  {selected.dxfUrl && canImport && <a href={selected.dxfUrl} target="_blank" rel="noreferrer">检查 CTG DXF 地址（未验证）↗</a>}
+                  {canImport && <label className="library-source-confirm"><input type="checkbox" checked={sourceConfirmed} onChange={(event) => setSourceConfirmed(event.target.checked)} />我确认文件从当前 CTG 型号页面下载</label>}
+                  {canImport && <label className={`dxf-upload ${!sourceConfirmed || importingArticle ? "disabled" : ""}`}>{importingArticle === selected.articleNumber ? "正在校验…" : "导入匹配的 DXF / ZIP"}<input disabled={!sourceConfirmed || Boolean(importingArticle)} type="file" accept=".dxf,.zip,application/zip" onChange={importDxf} /></label>}
+                </div>
+                {importMessage?.articleNumber === selected.articleNumber && <p className={`library-import-message ${importMessage.tone}`} role={importMessage.tone === "error" ? "alert" : "status"}>{selected.articleNumber}：{importMessage.text}</p>}
+                <div className="library-use-note">
+                  <strong>{selectedGeometry ? "DXF 主轮廓已校验" : "当前仅为非原厂示意"}</strong>
+                  <p>{selected.kind === "punch" ? selectedGeometry ? "型号、毫米单位、外形尺寸与闭合性已通过软件校验，可用于二维上模避碰和自动排刀；生产前仍须工程复核。" : "示意轮廓不代表这个型号，也不会进入碰撞结论。请从 CTG 下载对应文件后导入。" : selected.kind === "die" ? "可导入对应 DXF 查看主轮廓；当前版本尚未把下模 CAD 接入碰撞、V 口和折弯力校核。" : "附件与夹持件只保留目录事实和来源，不参与当前二维模拟。"}</p>
+                </div>
+                <button type="button" className="library-use-button" disabled={!canUse || Boolean(importingArticle)} onClick={() => {
+                  if (importingArticle) return;
+                  setSourceConfirmed(false);
+                  setImportMessage(null);
+                  onUseTool(selected);
+                }}>
+                  {current ? "当前正在使用" : canUsePunch ? "使用已校验 CAD 上模" : selected.kind === "die" && hasDieGeometry ? (selected.vOpeningMm ? `使用目录 V${selected.vOpeningMm} 下模` : "使用已加载 DXF 下模") : canUseDie ? `使用目录 V${selected.vOpeningMm} 下模` : isSimulatablePunch(selected) ? "确认来源并导入 DXF 后可用于模拟" : "该条目仅供查询"}
+                </button>
+                                <button type="button" className="library-use-button" style={{background:"linear-gradient(135deg,#4a90d9,#357abd)",marginBottom:"8px"}} onClick={() => { if (onExportGeometries) onExportGeometries(); }}>导出所有已保存的 DXF 轮廓文件 ↘</button>
+                <small className="library-rights-note">CTG 图纸与 DXF 版权归原权利人；本站仅保存产品事实索引。DXF 由用户从原厂下载并在本机浏览器校验，不上传或再分发。</small>
+              </>
+            )}
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
