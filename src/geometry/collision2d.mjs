@@ -20,6 +20,16 @@ function polygon(poly){
  const pts=poly.map(point);
  const area=pts.reduce((s,p,i)=>{const q=pts[(i+1)%pts.length];return s+p.x*q.y-q.x*p.y;},0);
  if(Math.abs(area)<EPS)throw new RangeError('degenerate polygon');
+ // Self-crossing/tool contours are ambiguous for collision testing.
+ for(let i=0;i<pts.length;i++){
+  if(Math.hypot(pts[i].x-pts[(i+1)%pts.length].x,pts[i].y-pts[(i+1)%pts.length].y)<EPS)
+   throw new RangeError('zero-length polygon edge');
+  for(let j=i+1;j<pts.length;j++){
+   if(j===i+1||(i===0&&j===pts.length-1))continue;
+   if(segmentsIntersect(pts[i],pts[(i+1)%pts.length],pts[j],pts[(j+1)%pts.length]))
+    throw new RangeError('self-intersecting polygon');
+  }
+ }
  return pts;
 }
 function inside(p,poly){
