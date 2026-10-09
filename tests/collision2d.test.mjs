@@ -25,3 +25,12 @@ test('invalid geometry fails',()=>{
  assert.throws(()=>polylineHitsPolygon([{x:0,y:0},{x:3,y:3}],[{x:0,y:0},{x:1,y:1},{x:2,y:2}]),RangeError);
  assert.throws(()=>polylineHitsPolygon([{x:0,y:0},{x:NaN,y:3}],square),RangeError);
 });
+
+test('self-crossing polygon is rejected even if signed area nonzero',()=>{
+ const bow=[{x:0,y:0},{x:5,y:5},{x:0,y:4},{x:5,y:0},{x:4,y:-1}];
+ assert.throws(()=>polylineHitsPolygon([{x:6,y:6},{x:7,y:7}],bow),RangeError);
+});
+test('zero-length polygon edge rejected',()=>{
+ const invalid=[{x:0,y:0},{x:4,y:0},{x:4,y:0},{x:4,y:4},{x:0,y:4}];
+ assert.throws(()=>polylineHitsPolygon([{x:6,y:6},{x:7,y:7}],invalid),RangeError);
+});
