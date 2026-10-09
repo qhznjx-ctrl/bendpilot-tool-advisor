@@ -29,3 +29,8 @@ test('history-dependent collision constraint is retained',()=>{
  feasible:({history,step})=>step.id!=='C'||history[0]?.id==='B',beamWidth:64});
  assert.equal(p.status,'OK');assert.deepEqual(p.sequence.map(x=>x.id),['B','A','C']);
 });
+
+test('invalid collision predicate result is rejected instead of authorizing a bend',()=>{
+ assert.throws(()=>planBendSequence([st('A')],{feasible:()=>({possible:true})}),TypeError);
+ assert.equal(planBendSequence([st('A')],{feasible:()=>false}).status,'NO_VALID_SEQUENCE');
+});
