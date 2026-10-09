@@ -2,8 +2,10 @@
  * External feasible callback is mandatory for real machine collision assessment;
  * default true is for algorithmic fixtures ONLY.
  */
-export function auditBendSequence(steps, sequence, {feasible=()=>true}={}) {
-  if(!Array.isArray(steps)||!Array.isArray(sequence)||typeof feasible!=='function')
+export function auditBendSequence(steps, sequence, {feasible,evidenceId=null}={}) {
+  const hasCollisionCheck=typeof feasible==='function';
+  const evaluate=feasible??(()=>true);
+  if(!Array.isArray(steps)||!Array.isArray(sequence)||(feasible!==undefined&&typeof feasible!=='function'))
     throw new TypeError('steps, sequence and feasibility predicate required');
   const byId=new Map();
   for(const s of steps) {
@@ -24,7 +26,7 @@ export function auditBendSequence(steps, sequence, {feasible=()=>true}={}) {
       errors.push(`${prefix}: unsupported workpiece side`);
     if(op.toolId!==step.toolId)
       errors.push(`${prefix}: selected die differs from step`);
-    const allowed=feasible({history:history.map(x=>({...x})),step,side:op.side});
+    const allowed=evaluate({history:history.map(x=>({...x})),step,side:op.side});
     if(typeof allowed!=='boolean') throw new TypeError('feasible must return boolean');
     if(!allowed) errors.push(`${prefix}: rejected by collision/reachability predicate`);
     completed.add(op.id);
@@ -32,5 +34,7 @@ export function auditBendSequence(steps, sequence, {feasible=()=>true}={}) {
   });
   for(const id of byId.keys()) if(!completed.has(id)) errors.push(`missing bend: ${id}`);
   return {valid:errors.length===0,errors,checked:history.length,
-          note:'Feasibility reflects the supplied callback; no built-in collision geometry.'};
+          collision_callback_used:hasCollisionCheck,manufacturing_ready:false,
+          evidence_id:hasCollisionCheck&&typeof evidenceId==='string'?evidenceId:null,
+          note:'Feasibility reflects an external callback; NOT independently validated or manufacturing-approved.'};
 }
