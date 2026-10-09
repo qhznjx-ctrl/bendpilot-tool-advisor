@@ -49,3 +49,20 @@ export function polylineHitsPolygon(vertices,obstacle){
   if(segmentsIntersect(line[i-1],line[i],poly[j],poly[(j+1)%poly.length]))return true;
  return false;
 }
+
+/** Detect contact between non-adjacent sheet centerline edges. A negative
+ * result is NOT proof of clearance because sheet thickness is excluded. */
+export function polylineSelfContact(vertices) {
+ if(!Array.isArray(vertices)||vertices.length<2||vertices.length>1000)
+  throw new RangeError('invalid workpiece polyline');
+ const pts=vertices.map(point);
+ for(let i=0;i<pts.length-1;i++){
+  if(Math.hypot(pts[i+1].x-pts[i].x,pts[i+1].y-pts[i].y)<EPS)
+   throw new RangeError('zero-length workpiece edge');
+  for(let j=i+2;j<pts.length-1;j++){
+   if(segmentsIntersect(pts[i],pts[i+1],pts[j],pts[j+1]))
+    return {contact:true,first_edge:i,second_edge:j};
+  }
+ }
+ return {contact:false,first_edge:null,second_edge:null};
+}
