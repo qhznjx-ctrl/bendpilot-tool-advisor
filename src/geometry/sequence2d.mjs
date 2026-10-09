@@ -1,12 +1,14 @@
 /** Deterministic bounded beam-search operation planner, not a collision engine. */
 export function planBendSequence(steps, {
   initialSide='front',initialTool=null,beamWidth=64,
-  flipCost=5,toolChangeCost=3,stepCost=1,feasible=()=>true
+  flipCost=5,toolChangeCost=3,stepCost=1,feasible
 }={}) {
   if (!Array.isArray(steps)||!steps.length||steps.length>64) throw new RangeError('invalid steps');
   if (!['front','back'].includes(initialSide)||!Number.isInteger(beamWidth)||beamWidth<1||beamWidth>512||
-      ![flipCost,toolChangeCost,stepCost].every(x=>Number.isFinite(x)&&x>=0)||typeof feasible!=='function')
+      ![flipCost,toolChangeCost,stepCost].every(x=>Number.isFinite(x)&&x>=0)||(feasible!==undefined && typeof feasible!=='function'))
     throw new RangeError('invalid planner options');
+  const evaluate=feasible??(()=>true);
+  const collisionCallbackUsed=typeof feasible==='function';
   const ids=new Set();
   for(const s of steps) {
     if(!s||typeof s.id!=='string'||!s.id.trim()||ids.has(s.id)||typeof s.toolId!=='string'||
@@ -23,6 +25,7 @@ export function planBendSequence(steps, {
   const ordered=[...steps].sort((a,b)=>a.id.localeCompare(b.id,'en'));
   let frontier=[{done:new Set(),history:[],side:initialSide,tool:initialTool,cost:0,flips:0,toolChanges:0}];
   let explored=0;
+  let searchTruncated=false;
   for(let depth=0;depth<steps.length;depth++) {
     const next=[];
     for(const state of frontier) for(const step of ordered) {
@@ -39,13 +42,14 @@ export function planBendSequence(steps, {
           flips:state.flips+Number(flip),toolChanges:state.toolChanges+Number(change)});
       }
     }
-    if(!next.length) return {status:'NO_VALID_SEQUENCE',sequence:[],reason:'Constraints blocked',explored};
+    if(!next.length) return {status:searchTruncated?'SEARCH_INCONCLUSIVE':'NO_VALID_SEQUENCE',sequence:[],reason:searchTruncated?'Beam search pruned possible histories':'Constraints blocked',explored,searchTruncated};
     next.sort((a,b)=>a.cost-b.cost||a.flips-b.flips||a.toolChanges-b.toolChanges||
       a.history.map(x=>x.id+'@'+x.side).join('|').localeCompare(b.history.map(x=>x.id+'@'+x.side).join('|'),'en'));
     // History matters to an injected feasibility callback: do not prune by only the done-set.
+    if(next.length>beamWidth) searchTruncated=true;
     frontier=next.slice(0,beamWidth);
   }
   const best=frontier[0];
   return {status:'OK',sequence:best.history,cost:best.cost,flips:best.flips,
-          toolChanges:best.toolChanges,explored,algorithm:'bounded-beam-search',globallyOptimal:false,collisionCallbackUsed,manufacturingReady:false};
+          toolChanges:best.toolChanges,explored,algorithm:'bounded-beam-search',globallyOptimal:false,collisionCallbackUsed,manufacturingReady:false,searchTruncated};
 }
