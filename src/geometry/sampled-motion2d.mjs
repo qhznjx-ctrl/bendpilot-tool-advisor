@@ -1,6 +1,6 @@
 /** Discrete collision WITNESS only. Nonhits remain UNVERIFIED. */
 import {bendPolyline} from './polyline2d.mjs';
-import {polylineHitsPolygon} from './collision2d.mjs';
+import {polylineHitsPolygon,polylineSelfContact} from './collision2d.mjs';
 export function inspectSampledBend({vertices,hingeIndex,movedSide,angleDeg,obstacles,samples=37}) {
   if(!Array.isArray(obstacles)||obstacles.length<1||obstacles.length>64||
      typeof angleDeg!=='number'||!Number.isFinite(angleDeg)||Math.abs(angleDeg)>180||
@@ -8,6 +8,10 @@ export function inspectSampledBend({vertices,hingeIndex,movedSide,angleDeg,obsta
   for(let i=0;i<samples;i++){
     const theta=angleDeg*i/(samples-1);
     const posed=bendPolyline(vertices,hingeIndex,movedSide,theta);
+    const self=polylineSelfContact(posed);
+    if(self.contact) return {status:'HIT',sample_angle_deg:theta,obstacle_index:null,
+      reason:'WORKPIECE_SELF_CONTACT',sheet_edges:[self.first_edge,self.second_edge],
+      samples_checked:i+1,validated_clearance:false,method:'discrete_2d_pose_sampling'};
     for(let j=0;j<obstacles.length;j++)
       if(polylineHitsPolygon(posed,obstacles[j]))
         return {status:'HIT',sample_angle_deg:theta,obstacle_index:j,samples_checked:i+1,
