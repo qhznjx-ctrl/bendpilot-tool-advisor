@@ -34,3 +34,22 @@ test('invalid collision predicate result is rejected instead of authorizing a be
  assert.throws(()=>planBendSequence([st('A')],{feasible:()=>({possible:true})}),TypeError);
  assert.equal(planBendSequence([st('A')],{feasible:()=>false}).status,'NO_VALID_SEQUENCE');
 });
+
+test('finite beam search never claims global infeasibility after pruning',()=>{
+ const specs=[st('A'),st('B'),st('C','T1',['A','B'])];
+ const feasible=({history,step})=>step.id!=='C'||history[0]?.id==='B';
+ const narrow=planBendSequence(specs,{feasible,beamWidth:1});
+ assert.equal(narrow.status,'SEARCH_INCONCLUSIVE');
+ assert.equal(narrow.searchTruncated,true);
+ const wide=planBendSequence(specs,{feasible,beamWidth:64});
+ assert.equal(wide.status,'OK');
+ assert.deepEqual(wide.sequence.map(x=>x.id),['B','A','C']);
+});
+test('callback provenance and default feasibility are defined',()=>{
+ const noCallback=planBendSequence([st('A')]);
+ assert.equal(noCallback.status,'OK');
+ assert.equal(noCallback.collisionCallbackUsed,false);
+ assert.equal(noCallback.manufacturingReady,false);
+ const withCallback=planBendSequence([st('A')],{feasible:()=>true});
+ assert.equal(withCallback.collisionCallbackUsed,true);
+});
