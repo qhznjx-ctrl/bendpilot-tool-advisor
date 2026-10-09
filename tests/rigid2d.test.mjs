@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {rotateAround,reflectAcrossLine,bendVertices} from '../src/geometry/rigid2d.mjs';
+import {rotateAround,reflectAcrossLine,bendVertices,signedTurnDegrees} from '../src/geometry/rigid2d.mjs';
 const near=(p,q)=>{assert.ok(Math.abs(p.x-q.x)<1e-8);assert.ok(Math.abs(p.y-q.y)<1e-8);};
 test('signed inward/outward angles create opposite motion without mutating input',()=>{
  const v=[{x:0,y:0},{x:10,y:0},{x:20,y:0}];
@@ -26,4 +26,15 @@ test('invalid input rejected',()=>{
  assert.throws(()=>reflectAcrossLine({x:0,y:0},{x:1,y:1},{x:1,y:1}),RangeError);
  assert.throws(()=>bendVertices([{x:0,y:0}],0,[0],35),RangeError);
  assert.throws(()=>rotateAround({x:NaN,y:0},{x:0,y:0},5),RangeError);
+});
+
+test('signed turn reverses across a mirrored workpiece',()=>{
+ const prev={x:0,y:0},hinge={x:5,y:0},next={x:5,y:8};
+ const flip=p=>reflectAcrossLine(p,{x:0,y:0},{x:10,y:0});
+ const before=signedTurnDegrees(prev,hinge,next);
+ const after=signedTurnDegrees(flip(prev),flip(hinge),flip(next));
+ assert.ok(Math.abs(before+after)<1e-8);
+});
+test('zero-length fold edges are invalid',()=>{
+ assert.throws(()=>signedTurnDegrees({x:0,y:0},{x:0,y:0},{x:5,y:1}),RangeError);
 });
