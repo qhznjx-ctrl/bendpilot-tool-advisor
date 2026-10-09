@@ -28,7 +28,7 @@ export function planBendSequence(steps, {
     for(const state of frontier) for(const step of ordered) {
       if(state.done.has(step.id)||!(step.dependencies||[]).every(d=>state.done.has(d))) continue;
       for(const side of [...new Set(step.sides||['front','back'])].sort()) {
-        const allowed=feasible({history:state.history.map(x=>({...x})),step,side});
+        const allowed=evaluate({history:state.history.map(x=>({...x})),step,side});
         if(typeof allowed!=='boolean') throw new TypeError('feasible must return boolean');
         if(!allowed) continue;
         explored++;
@@ -47,5 +47,5 @@ export function planBendSequence(steps, {
   }
   const best=frontier[0];
   return {status:'OK',sequence:best.history,cost:best.cost,flips:best.flips,
-          toolChanges:best.toolChanges,explored,algorithm:'bounded-beam-search',globallyOptimal:false};
+          toolChanges:best.toolChanges,explored,algorithm:'bounded-beam-search',globallyOptimal:false,collisionCallbackUsed,manufacturingReady:false};
 }
