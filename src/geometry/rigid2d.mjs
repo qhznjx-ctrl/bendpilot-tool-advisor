@@ -24,3 +24,12 @@ export function bendVertices(vertices, hingeIndex, movedIndices, signedDegrees) 
     throw new RangeError("invalid movable vertex");
   return vertices.map((p,i)=>moved.has(i)?rotateAround(p,hinge,signedDegrees):pt(p));
 }
+
+/** Signed 2D turn at the hinge; reflection must reverse the sign. */
+export function signedTurnDegrees(previous, hinge, next) {
+  const p=pt(previous),h=pt(hinge),n=pt(next);
+  const ax=p.x-h.x,ay=p.y-h.y,bx=n.x-h.x,by=n.y-h.y;
+  if(Math.hypot(ax,ay)<1e-9||Math.hypot(bx,by)<1e-9)
+    throw new RangeError('zero-length bend edge');
+  return Math.atan2(ax*by-ay*bx,ax*bx+ay*by)*180/Math.PI;
+}
